@@ -33,13 +33,13 @@ export class PasteRepository extends BaseRepository {
    * @returns {Promise<Object>} 包含结果和分页信息的对象
    */
   async findAllWithPagination(options = {}) {
-    const { page = 1, limit = 10, createdBy = null, orderBy = "created_at DESC" } = options;
+    const { page = 1, limit = 10, created_by = null, orderBy = "created_at DESC" } = options;
     const offset = (page - 1) * limit;
 
     // 构建查询条件
     const conditions = {};
-    if (createdBy) {
-      conditions.created_by = createdBy;
+    if (created_by) {
+      conditions.created_by = created_by;
     }
 
     // 获取总数
@@ -63,28 +63,28 @@ export class PasteRepository extends BaseRepository {
 
   /**
    * 根据创建者获取文本分享列表
-   * @param {string} createdBy - 创建者标识
+   * @param {string} created_by - 创建者标识
    * @param {Object} options - 查询选项
    * @returns {Promise<Array>} 文本分享列表
    */
-  async findByCreator(createdBy, options = {}) {
+  async findByCreator(created_by, options = {}) {
     const { orderBy = "created_at DESC", limit, offset } = options;
 
-    return await this.findMany(DbTables.PASTES, { created_by: createdBy }, { orderBy, limit, offset });
+    return await this.findMany(DbTables.PASTES, { created_by: created_by }, { orderBy, limit, offset });
   }
 
   /**
    * 根据ID和创建者查找文本分享
    * @param {string} pasteId - 文本分享ID
-   * @param {string} createdBy - 创建者标识
+   * @param {string} created_by - 创建者标识
    * @returns {Promise<Object|null>} 文本分享对象或null
    */
-  async findByIdAndCreator(pasteId, createdBy) {
-    if (!pasteId || !createdBy) return null;
+  async findByIdAndCreator(pasteId, created_by) {
+    if (!pasteId || !created_by) return null;
 
     return await this.findOne(DbTables.PASTES, {
       id: pasteId,
-      created_by: createdBy,
+      created_by: created_by,
     });
   }
 
@@ -164,9 +164,9 @@ export class PasteRepository extends BaseRepository {
    */
   async deleteExpired(currentTime = new Date()) {
     const result = await this.execute(
-      `DELETE FROM ${DbTables.PASTES} 
+        `DELETE FROM ${DbTables.PASTES} 
        WHERE expires_at IS NOT NULL AND expires_at < ?`,
-      [currentTime.toISOString()]
+        [currentTime.toISOString()]
     );
 
     return {
@@ -181,7 +181,7 @@ export class PasteRepository extends BaseRepository {
    */
   async deleteOverViewLimit() {
     const result = await this.execute(
-      `DELETE FROM ${DbTables.PASTES} 
+        `DELETE FROM ${DbTables.PASTES} 
        WHERE max_views IS NOT NULL AND max_views > 0 AND views >= max_views`
     );
 
@@ -198,9 +198,9 @@ export class PasteRepository extends BaseRepository {
    */
   async findExpired(currentTime = new Date()) {
     const result = await this.query(
-      `SELECT * FROM ${DbTables.PASTES} 
+        `SELECT * FROM ${DbTables.PASTES} 
        WHERE expires_at IS NOT NULL AND expires_at < ?`,
-      [currentTime.toISOString()]
+        [currentTime.toISOString()]
     );
 
     return result.results || [];
@@ -212,7 +212,7 @@ export class PasteRepository extends BaseRepository {
    */
   async findOverViewLimit() {
     const result = await this.query(
-      `SELECT * FROM ${DbTables.PASTES} 
+        `SELECT * FROM ${DbTables.PASTES} 
        WHERE max_views IS NOT NULL AND max_views > 0 AND views >= max_views`
     );
 
@@ -236,11 +236,11 @@ export class PasteRepository extends BaseRepository {
 
   /**
    * 获取文本分享统计信息
-   * @param {string} createdBy - 创建者标识（可选）
+   * @param {string} created_by - 创建者标识（可选）
    * @returns {Promise<Object>} 统计信息
    */
-  async getStatistics(createdBy = null) {
-    const conditions = createdBy ? { created_by: createdBy } : {};
+  async getStatistics(created_by = null) {
+    const conditions = created_by ? { created_by: created_by } : {};
 
     const total = await this.count(DbTables.PASTES, conditions);
 
@@ -251,9 +251,9 @@ export class PasteRepository extends BaseRepository {
     let sql = `SELECT COUNT(*) as count FROM ${DbTables.PASTES} WHERE created_at >= ?`;
     const params = [sevenDaysAgo.toISOString()];
 
-    if (createdBy) {
+    if (created_by) {
       sql += ` AND created_by = ?`;
-      params.push(createdBy);
+      params.push(created_by);
     }
 
     const recentCount = await this.queryFirst(sql, params);
@@ -274,9 +274,9 @@ export class PasteRepository extends BaseRepository {
    */
   async createPasswordRecord(pasteId, plainPassword) {
     return await this.execute(
-      `INSERT INTO ${DbTables.PASTE_PASSWORDS} (paste_id, plain_password, created_at, updated_at)
+        `INSERT INTO ${DbTables.PASTE_PASSWORDS} (paste_id, plain_password, created_at, updated_at)
        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [pasteId, plainPassword]
+        [pasteId, plainPassword]
     );
   }
 
@@ -299,10 +299,10 @@ export class PasteRepository extends BaseRepository {
    */
   async updatePasswordRecord(pasteId, plainPassword) {
     return await this.execute(
-      `UPDATE ${DbTables.PASTE_PASSWORDS}
+        `UPDATE ${DbTables.PASTE_PASSWORDS}
        SET plain_password = ?, updated_at = CURRENT_TIMESTAMP
        WHERE paste_id = ?`,
-      [plainPassword, pasteId]
+        [plainPassword, pasteId]
     );
   }
 
@@ -447,7 +447,7 @@ export class PasteRepository extends BaseRepository {
    * @returns {Promise<Object>} 包含结果和分页信息的对象
    */
   async findAllForAdmin(options = {}) {
-    const { page = 1, limit = 10, offset = null, createdBy = null, search = null } = options;
+    const { page = 1, limit = 10, offset = null, created_by = null, search = null } = options;
 
     // 支持两种分页模式：page模式和offset模式
     const actualOffset = offset !== null ? offset : (page - 1) * limit;
@@ -463,16 +463,16 @@ export class PasteRepository extends BaseRepository {
     // 添加搜索条件 - 搜索链接标识、备注、内容
     if (search && search.trim()) {
       const searchPattern = `%${search.trim()}%`;
-      conditions.push("(slug LIKE ? OR remark LIKE ? OR SUBSTR(content, 1, 200) LIKE ?)");
+      conditions.push("(slug LIKE ? OR remark LIKE ? OR content LIKE ?)");
       queryParams.push(searchPattern, searchPattern, searchPattern);
       countParams.push(searchPattern, searchPattern, searchPattern);
     }
 
     // 添加创建者筛选
-    if (createdBy) {
+    if (created_by) {
       conditions.push("created_by = ?");
-      queryParams.push(createdBy);
-      countParams.push(createdBy);
+      queryParams.push(created_by);
+      countParams.push(created_by);
     }
 
     // 构建WHERE子句
@@ -486,21 +486,20 @@ export class PasteRepository extends BaseRepository {
     const countResult = await this.queryFirst(countSql, countParams);
     const total = countResult?.total || 0;
 
-    // 查询数据（包含格式化字段）
+    // 查询数据：管理员列表统一返回完整 content，由前端自行截断预览
     const querySql = `
       SELECT
         id,
         slug,
+        title,
+        content,
         remark,
         password IS NOT NULL as has_password,
         expires_at,
         max_views,
         views as view_count,
+        is_public,
         created_by,
-        CASE
-          WHEN LENGTH(content) > 200 THEN SUBSTR(content, 1, 200) || '...'
-          ELSE content
-        END as content_preview,
         created_at,
         updated_at
       FROM ${DbTables.PASTES}${whereClause}
@@ -528,16 +527,16 @@ export class PasteRepository extends BaseRepository {
 
   /**
    * 获取用户文本分享列表（包含完整内容）
-   * @param {string} createdBy - 创建者标识
+   * @param {string} created_by - 创建者标识
    * @param {Object} options - 查询选项
    * @returns {Promise<Object>} 包含结果和分页信息的对象
    */
-  async findByCreatorWithPagination(createdBy, options = {}) {
+  async findByCreatorWithPagination(created_by, options = {}) {
     const { limit = 30, offset = 0, search = null } = options;
 
     // 构建查询条件
     let whereClause = "WHERE created_by = ?";
-    let params = [createdBy];
+    let params = [created_by];
 
     // 添加搜索条件 - 搜索链接标识、备注、内容
     if (search && search.trim()) {
@@ -548,8 +547,8 @@ export class PasteRepository extends BaseRepository {
 
     // 查询数据
     const querySql = `
-      SELECT id, slug, content, remark, password IS NOT NULL as has_password,
-      expires_at, max_views, views, created_at, updated_at, created_by
+      SELECT id, slug, title, content, remark, password IS NOT NULL as has_password,
+      expires_at, max_views, views, is_public, created_at, updated_at, created_by
       FROM ${DbTables.PASTES}
       ${whereClause}
       ORDER BY created_at DESC
@@ -582,16 +581,16 @@ export class PasteRepository extends BaseRepository {
   /**
    * 根据条件查找文本分享（用于更新前的权限检查）
    * @param {string} slug - 唯一标识
-   * @param {string} createdBy - 创建者标识（可选，用于权限检查）
+   * @param {string} created_by - 创建者标识（可选，用于权限检查）
    * @returns {Promise<Object|null>} 文本分享对象或null
    */
-  async findBySlugForUpdate(slug, createdBy = null) {
+  async findBySlugForUpdate(slug, created_by = null) {
     let sql = `SELECT id, slug, expires_at, max_views, views FROM ${DbTables.PASTES} WHERE slug = ?`;
     const params = [slug];
 
-    if (createdBy) {
+    if (created_by) {
       sql += ` AND created_by = ?`;
-      params.push(createdBy);
+      params.push(created_by);
     }
 
     return await this.queryFirst(sql, params);
@@ -626,6 +625,11 @@ export class PasteRepository extends BaseRepository {
     }
 
     // 处理基本字段更新
+    if (updateData.title !== undefined) {
+      updateFields.push("title = ?");
+      params.push(updateData.title || null);
+    }
+
     if (updateData.content !== undefined) {
       updateFields.push("content = ?");
       params.push(updateData.content);
@@ -644,6 +648,11 @@ export class PasteRepository extends BaseRepository {
     if (updateData.max_views !== undefined) {
       updateFields.push("max_views = ?");
       params.push(updateData.max_views || null);
+    }
+
+    if (updateData.is_public !== undefined) {
+      updateFields.push("is_public = ?");
+      params.push(updateData.is_public ? 1 : 0);
     }
 
     if (resetViews) {
@@ -671,16 +680,16 @@ export class PasteRepository extends BaseRepository {
   /**
    * 批量删除指定创建者的文本分享
    * @param {Array<string>} pasteIds - 文本分享ID数组
-   * @param {string} createdBy - 创建者标识
+   * @param {string} created_by - 创建者标识
    * @returns {Promise<Object>} 删除结果
    */
-  async batchDeleteByCreator(pasteIds, createdBy) {
+  async batchDeleteByCreator(pasteIds, created_by) {
     if (!pasteIds || pasteIds.length === 0) {
       return { deletedCount: 0, message: "没有要删除的文本分享" };
     }
 
     const placeholders = pasteIds.map(() => "?").join(",");
-    const params = [...pasteIds, createdBy];
+    const params = [...pasteIds, created_by];
 
     const result = await this.execute(`DELETE FROM ${DbTables.PASTES} WHERE id IN (${placeholders}) AND created_by = ?`, params);
 

@@ -4,13 +4,16 @@
  * 在单个文件内修复所有标准违反问题
  */
 
-import { handleWebDAVError } from "../utils/errorUtils.js";
+import { withWebDAVErrorHandling } from "../utils/errorUtils.js";
+import { UserType } from "../../constants/index.js";
 import { MountManager } from "../../storage/managers/MountManager.js";
 import { FileSystem } from "../../storage/fs/FileSystem.js";
-import { authGateway } from "../../middlewares/authGatewayMiddleware.js";
+import { getAccessibleMountsForUser, canNavigatePath } from "../../security/helpers/access.js";
 import { getMimeTypeFromFilename } from "../../utils/fileUtils.js";
-import { getLockManager } from "../utils/LockManager.js";
+import { lockManager } from "../utils/LockManager.js";
 import { buildLockDiscoveryXML } from "../utils/lockUtils.js";
+import { WEBDAV_BASE_PATH } from "../auth/config/WebDAVConfig.js";
+import { getWebDAVMultiStatusHeaders } from "../utils/headerUtils.js";
 
 // 导入虚拟目录处理函数
 import { isVirtualPath, getVirtualDirectoryListing } from "../../storage/fs/utils/VirtualDirectory.js";
@@ -155,7 +158,6 @@ function extractPropertyName(xmlTag) {
  */
 function getAllProperties(item, path) {
   const isDirectory = item.isDirectory || false;
-  const lockManager = getLockManager();
 
   return {
     resourcetype: {
@@ -193,7 +195,7 @@ function getAllProperties(item, path) {
     lockdiscovery: {
       value: (() => {
         // 获取当前路径的锁定信息
-        const lockInfo = lockManager.getLock(item.path || path);
+        const lockInfo = lockManager.getLockByPath(item.path || path);
         return buildLockDiscoveryXML(lockInfo);
       })(),
       status: PropertyStatus.OK,
@@ -368,15 +370,13 @@ function getPropertiesForRequest(item, path, requestInfo) {
  * @returns {string} Multi-Status XML
  */
 function buildMultiStatusXML(responses) {
-  let xml = `<?xml version="1.0" encoding="utf-8"?>
-<D:multistatus xmlns:D="DAV:">`;
+  let xml = `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">`;
 
   for (const response of responses) {
     xml += buildResponseXML(response);
   }
 
-  xml += `
-</D:multistatus>`;
+  xml += `\n</D:multistatus>`;
 
   return xml;
 }
@@ -501,6 +501,19 @@ function getStatusText(status) {
  * @returns {Response} HTTP响应对象
  */
 function createErrorResponse(href, status, message) {
+  // 404等错误，直接返回对应的状态码
+  // 客户端才能正确理解资源不存在后继续后续操作（如PUT上传）
+  if (status === 404) {
+    return new Response(message, {
+      status: 404,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        DAV: "1, 2",
+      },
+    });
+  }
+
+  // 对于其他错误，使用Multi-Status格式
   const xml = buildMultiStatusXML([
     {
       href: href,
@@ -510,9 +523,9 @@ function createErrorResponse(href, status, message) {
   ]);
 
   return new Response(xml, {
-    status: 207, // Multi-Status
+    status: status >= 400 ? status : 207,
     headers: {
-      "Content-Type": "application/xml; charset=utf-8",
+      "Content-Type": "text/xml; charset=utf-8",
       DAV: "1, 2",
     },
   });
@@ -531,13 +544,13 @@ function createErrorResponse(href, status, message) {
  * @returns {Response} HTTP响应
  */
 export async function handlePropfind(c, path, userId, userType, db) {
-  try {
+  return withWebDAVErrorHandling("PROPFIND", async () => {
     // 修复：Depth默认值应该是"infinity"（符合RFC 4918标准）
     const depth = c.req.header("Depth") || "infinity";
 
     // 验证depth值
     if (!["0", "1", "infinity"].includes(depth)) {
-      return createErrorResponse("/dav" + path, 400, "Invalid Depth header value");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 400, "Invalid Depth header value");
     }
 
     console.log(`WebDAV PROPFIND - 路径: ${path}, 深度: ${depth}`);
@@ -557,10 +570,10 @@ export async function handlePropfind(c, path, userId, userType, db) {
 
     // 获取用户信息（适配WebDAV中间件的格式）
     let userIdOrInfo, actualUserType;
-    if (userType === "admin") {
+    if (userType === UserType.ADMIN) {
       userIdOrInfo = userId;
-      actualUserType = "admin";
-    } else if (userType === "apiKey") {
+      actualUserType = UserType.ADMIN;
+    } else if (userType === UserType.API_KEY) {
       // 对于API密钥用户，userId应该是完整的信息对象
       if (typeof userId === "object" && userId !== null) {
         userIdOrInfo = {
@@ -572,16 +585,16 @@ export async function handlePropfind(c, path, userId, userType, db) {
       } else {
         return createErrorResponse("/dav" + path, 401, "API密钥信息格式错误");
       }
-      actualUserType = "apiKey";
+      actualUserType = UserType.API_KEY;
     } else {
       return createErrorResponse("/dav" + path, 401, "未知用户类型");
     }
 
-    return await processPropfindRequest(path, requestInfo, userIdOrInfo, actualUserType, db, c.env.ENCRYPTION_SECRET);
-  } catch (error) {
-    console.error("PROPFIND处理失败:", error);
-    return handleWebDAVError(error, "PROPFIND");
-  }
+    const { getEncryptionSecret } = await import("../../utils/environmentUtils.js");
+    const encryptionSecret = getEncryptionSecret(c);
+    const repositoryFactory = c.get("repos");
+    return await processPropfindRequest(path, requestInfo, userIdOrInfo, actualUserType, db, encryptionSecret, repositoryFactory);
+  }, { includeDetails: false });
 }
 
 /**
@@ -592,29 +605,30 @@ export async function handlePropfind(c, path, userId, userType, db) {
  * @param {string} actualUserType - 实际用户类型
  * @param {D1Database} db - 数据库实例
  * @param {string} encryptionSecret - 加密密钥
+ * @param {RepositoryFactory} repositoryFactory - 仓储工厂实例
  * @returns {Response} HTTP响应
  */
-async function processPropfindRequest(path, requestInfo, userIdOrInfo, actualUserType, db, encryptionSecret) {
+async function processPropfindRequest(path, requestInfo, userIdOrInfo, actualUserType, db, encryptionSecret, repositoryFactory) {
   try {
     // 检查API密钥用户的路径权限
-    if (actualUserType === "apiKey") {
-      if (!authGateway.utils.checkPathPermissionForNavigation(userIdOrInfo.basicPath, path)) {
-        return createErrorResponse("/dav" + path, 403, "没有权限访问此路径");
+    if (actualUserType === UserType.API_KEY) {
+      if (!canNavigatePath(userIdOrInfo.basicPath, path)) {
+        return createErrorResponse(WEBDAV_BASE_PATH + path, 403, "没有权限访问此路径");
       }
     }
 
     // 获取用户可访问的挂载点列表
-    const mounts = await authGateway.utils.getAccessibleMounts(db, userIdOrInfo, actualUserType);
+    const mounts = await getAccessibleMountsForUser(db, userIdOrInfo, actualUserType);
 
     // 检查是否为虚拟路径
     if (isVirtualPath(path, mounts)) {
       // 处理虚拟目录
-      const basicPath = actualUserType === "apiKey" ? userIdOrInfo.basicPath : null;
+      const basicPath = actualUserType === UserType.API_KEY ? userIdOrInfo.basicPath : null;
       return await handleVirtualDirectoryPropfind(mounts, path, basicPath, requestInfo);
     }
 
     // 处理实际存储路径
-    const mountManager = new MountManager(db, encryptionSecret);
+    const mountManager = new MountManager(db, encryptionSecret, repositoryFactory);
     const fileSystem = new FileSystem(mountManager);
 
     return await handleStoragePropfind(fileSystem, path, requestInfo, userIdOrInfo, actualUserType);
@@ -622,11 +636,11 @@ async function processPropfindRequest(path, requestInfo, userIdOrInfo, actualUse
     console.error("处理PROPFIND请求失败:", error);
 
     if (error.message && error.message.includes("权限")) {
-      return createErrorResponse("/dav" + path, 403, "权限不足");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 403, "权限不足");
     } else if (error.message && error.message.includes("不存在")) {
-      return createErrorResponse("/dav" + path, 404, "资源不存在");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 404, "资源不存在");
     } else {
-      return createErrorResponse("/dav" + path, 500, "内部服务器错误");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 500, "内部服务器错误");
     }
   }
 }
@@ -656,7 +670,7 @@ async function handleVirtualDirectoryPropfind(mounts, path, basicPath, requestIn
     // 如果depth=1，添加子项
     if (requestInfo.depth === "1" && result.items) {
       for (const item of result.items) {
-        const itemPath = "/dav" + normalizePath(item.path, item.isDirectory);
+        const itemPath = WEBDAV_BASE_PATH + normalizePath(item.path, item.isDirectory);
         const itemProperties = getPropertiesForRequest(item, item.path, requestInfo);
         responses.push({
           href: itemPath,
@@ -669,14 +683,11 @@ async function handleVirtualDirectoryPropfind(mounts, path, basicPath, requestIn
 
     return new Response(xml, {
       status: 207, // Multi-Status
-      headers: {
-        "Content-Type": "application/xml; charset=utf-8",
-        DAV: "1, 2",
-      },
+      headers: getWebDAVMultiStatusHeaders(),
     });
   } catch (error) {
     console.error("处理虚拟目录PROPFIND失败:", error);
-    return createErrorResponse("/dav" + path, 500, "内部服务器错误");
+    return createErrorResponse(WEBDAV_BASE_PATH + path, 500, "内部服务器错误");
   }
 }
 
@@ -707,53 +718,14 @@ async function handleStoragePropfind(fileSystem, path, requestInfo, userIdOrInfo
           items: [], // depth=0时不包含子项
         };
       } catch (error) {
-        // nginx风格便利功能：如果资源不存在，尝试自动创建目录
-        if (error.status === 404) {
-          console.log(`WebDAV PROPFIND - 资源不存在，尝试自动创建目录: ${path}`);
-          try {
-            await fileSystem.createDirectory(path, userIdOrInfo, actualUserType);
-            console.log(`WebDAV PROPFIND - 自动创建目录成功: ${path}`);
-
-            // 重新获取文件信息
-            const fileInfo = await fileSystem.getFileInfo(path, userIdOrInfo, actualUserType);
-            result = {
-              path: path,
-              isDirectory: fileInfo.isDirectory,
-              name: fileInfo.name,
-              size: fileInfo.size,
-              modified: fileInfo.modified,
-              created: fileInfo.created,
-              items: [],
-            };
-          } catch (createError) {
-            console.log(`WebDAV PROPFIND - 自动创建目录失败，返回原始404错误: ${createError.message}`);
-            throw error; // 返回原始的404错误
-          }
-        } else {
-          throw error;
-        }
+        throw error;
       }
     } else if (requestInfo.depth === "1") {
       // 获取当前资源和直接子项
       try {
         result = await fileSystem.listDirectory(path, userIdOrInfo, actualUserType);
       } catch (error) {
-        // 风格便利功能：如果目录不存在，尝试自动创建
-        if (error.status === 404) {
-          console.log(`WebDAV PROPFIND - 目录不存在，尝试自动创建: ${path}`);
-          try {
-            await fileSystem.createDirectory(path, userIdOrInfo, actualUserType);
-            console.log(`WebDAV PROPFIND - 自动创建目录成功: ${path}`);
-
-            // 重新列出目录
-            result = await fileSystem.listDirectory(path, userIdOrInfo, actualUserType);
-          } catch (createError) {
-            console.log(`WebDAV PROPFIND - 自动创建目录失败，返回原始404错误: ${createError.message}`);
-            throw error; // 返回原始的404错误
-          }
-        } else {
-          throw error;
-        }
+        throw error;
       }
     } else {
       // infinity深度 - 大多数服务器会拒绝此请求
@@ -797,22 +769,26 @@ async function handleStoragePropfind(fileSystem, path, requestInfo, userIdOrInfo
 
     const xml = buildMultiStatusXML(responses);
 
+    // // 调试：输出完整的XML内容（仅在depth=0时，避免过多日志）
+    // if (requestInfo.depth === "0") {
+    //   console.log(`WebDAV PROPFIND 完整XML响应:\n${xml}`);
+    // } else {
+    //   console.log(`WebDAV PROPFIND XML响应预览: ${xml.substring(0, 200)}...`);
+    // }
+
     return new Response(xml, {
       status: 207, // Multi-Status
-      headers: {
-        "Content-Type": "application/xml; charset=utf-8",
-        DAV: "1, 2",
-      },
+      headers: getWebDAVMultiStatusHeaders(),
     });
   } catch (error) {
     console.error("处理存储PROPFIND失败:", error);
 
     if (error.message && error.message.includes("权限")) {
-      return createErrorResponse("/dav" + path, 403, "权限不足");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 403, "权限不足");
     } else if (error.message && error.message.includes("不存在")) {
-      return createErrorResponse("/dav" + path, 404, "资源不存在");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 404, "资源不存在");
     } else {
-      return createErrorResponse("/dav" + path, 500, "内部服务器错误");
+      return createErrorResponse(WEBDAV_BASE_PATH + path, 500, "内部服务器错误");
     }
   }
 }

@@ -4,6 +4,7 @@
  */
 
 import chardet from "chardet";
+import { fetchFileBinaryWithAuth } from "@/api/services/fileDownloadService.js";
 
 /**
  * 支持的编码格式列表
@@ -55,34 +56,23 @@ export const SUPPORTED_ENCODINGS = [
  * @param {Object} options - 选项
  * @param {number} options.sampleSize - 采样大小，默认4096字节
  * @param {number} options.timeout - 超时时间，默认10秒
+ * @param {AbortSignal} [options.signal] - 取消信号
  * @returns {Promise<Object>} 检测结果
  */
 export async function detectEncodingFromUrl(url, options = {}) {
-  const { sampleSize = 4096, timeout = 10000 } = options;
+  const { sampleSize = 4096, timeout = 10000, signal } = options;
 
   try {
-    // 创建超时控制器
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-    // 获取文件的前几KB数据用于编码检测
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Range: `bytes=0-${sampleSize - 1}`,
-      },
-      signal: controller.signal,
+    // 通过统一的带鉴权工具获取二进制数据
+    const { buffer, size } = await fetchFileBinaryWithAuth(url, {
+      signal,
+      timeout,
     });
 
-    clearTimeout(timeoutId);
+    const fullUint8Array = new Uint8Array(buffer);
 
-    if (!response.ok && response.status !== 206) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    // 获取二进制数据
-    const arrayBuffer = await response.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
+    // 只使用前 sampleSize 字节进行编码检测
+    const uint8Array = fullUint8Array.length > sampleSize ? fullUint8Array.slice(0, sampleSize) : fullUint8Array;
 
     // 使用chardet检测编码
     const detectionResults = chardet.analyse(uint8Array);
@@ -100,6 +90,8 @@ export async function detectEncodingFromUrl(url, options = {}) {
         language: result.lang,
       })),
       sampleSize: uint8Array.length,
+      fullFileSize: size,
+      rawBuffer: fullUint8Array,
       error: null,
     };
   } catch (error) {
@@ -111,6 +103,8 @@ export async function detectEncodingFromUrl(url, options = {}) {
       confidence: 0,
       allResults: [],
       sampleSize: 0,
+      fullFileSize: 0,
+      rawBuffer: null,
       error: error.message,
     };
   }

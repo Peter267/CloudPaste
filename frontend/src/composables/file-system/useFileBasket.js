@@ -6,10 +6,11 @@
 import { computed, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { storeToRefs } from "pinia";
-import { useFileBasketStore } from "../../stores/fileBasketStore.js";
+import { useFileBasketStore } from "@/stores/fileBasketStore.js";
 import { useAuthStore } from "@/stores/authStore.js";
-import { useTaskManager } from "../../utils/taskManager.js";
+import { useTaskManager } from "@/utils/taskManager.js";
 import { api } from "@/api";
+import { formatNowForFilename } from "@/utils/timeUtils.js";
 
 export function useFileBasket() {
   const { t } = useI18n();
@@ -323,10 +324,15 @@ export function useFileBasket() {
       const { ZipWriter, BlobWriter, BlobReader, HttpReader } = await import("@zip.js/zip.js");
       const { saveAs } = await import("file-saver");
 
-      // 创建 ZipWriter（zip.js官方推荐的最佳实践）
+      // 创建 ZipWriter
       console.log(`处理 ${files.length} 个文件`);
       const blobWriter = new BlobWriter();
-      const zipWriter = new ZipWriter(blobWriter);
+      const zipWriter = new ZipWriter(blobWriter, {
+        keepOrder: true, // 保持文件顺序
+        useWebWorkers: true, // 启用Web Workers
+        useCompressionStream: true, // 使用原生压缩流
+        bufferedWrite: false, // 不缓冲写入，减少内存占用
+      });
       const failedFiles = [];
       const addedFiles = new Set();
 
@@ -377,10 +383,15 @@ export function useFileBasket() {
           await zipWriter.add(
             finalZipPath,
             new HttpReader(downloadUrl, {
-              preventHeadRequest: true,
-              useXHR: false,
+              preventHeadRequest: true, // 避免额外的HEAD请求
+              useXHR: false, // 使用fetch API
+              useCompressionStream: true, // 启用原生压缩流
+              transferStreams: true, // 启用流传输到Web Workers
             }),
             {
+              useWebWorkers: true, // 启用Web Workers
+              useCompressionStream: true, // 使用原生压缩流
+              transferStreams: true, // 启用流传输
               onprogress: (progress, total) => {
                 if (fileState) {
                   fileState.progress = total > 0 ? Math.round((progress / total) * 100) : 0;
@@ -444,7 +455,7 @@ export function useFileBasket() {
       const zipBlob = await zipWriter.close();
 
       // 下载ZIP文件
-      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+      const timestamp = formatNowForFilename();
       const zipFileName = `CloudPaste_${timestamp}.zip`;
       saveAs(zipBlob, zipFileName);
 
@@ -483,27 +494,12 @@ export function useFileBasket() {
    */
   const getFileDownloadUrl = async (file) => {
     try {
-      // 如果文件对象中已经有download_url，直接使用
-      if (file.download_url) {
-        return file.download_url;
-      }
-
-      // 使用统一API获取文件直链
+      // 使用统一API获取文件直链/代理 URL（file-link）
       const getFileLinkApi = api.fs.getFileLink;
-      const response = await getFileLinkApi(file.path, null, true); // 强制下载
+      const url = await getFileLinkApi(file.path, null, true); // 强制下载
 
-      if (response.success && response.data) {
-        // file-link API返回的是presignedUrl字段
-        if (response.data.presignedUrl) {
-          return response.data.presignedUrl;
-        }
-        // 兼容其他可能的字段名
-        if (response.data.download_url) {
-          return response.data.download_url;
-        }
-        if (response.data.proxy_download_url) {
-          return response.data.proxy_download_url;
-        }
+      if (url) {
+        return url;
       }
 
       throw new Error(t("fileBasket.errors.noDownloadUrl"));

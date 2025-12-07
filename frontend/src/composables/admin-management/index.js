@@ -3,5 +3,4 @@
  */
 
 export { useAdminBase } from "./useAdminBase.js";
-export { useFileManagement } from "./useFileManagement.js";
-export { usePasteManagement } from "./usePasteManagement.js";
+export { useCreatorBadge, creatorBadgeUtils, CreatorType } from "./useCreatorBadge.js";

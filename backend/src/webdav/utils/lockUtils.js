@@ -4,6 +4,8 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import { ApiStatus } from "../../constants/index.js";
+import { ValidationError } from "../../http/errors.js";
 
 /**
  * 生成WebDAV锁令牌
@@ -26,7 +28,7 @@ export function generateLockToken(tokenId) {
  */
 export function parseLockXML(xmlBody) {
   if (!xmlBody || typeof xmlBody !== "string") {
-    throw new Error("无效的XML请求体");
+    throw new ValidationError("无效的LOCK请求格式");
   }
 
   try {
@@ -66,10 +68,10 @@ export function parseLockXML(xmlBody) {
     lockinfo = findElementByLocalName(parsed, "lockinfo");
 
     if (!lockinfo) {
-      throw new Error("无效的LOCK请求：缺少lockinfo元素");
+      throw new ValidationError("无效的LOCK请求：缺少lockinfo元素");
     }
 
-    // 解析锁定范围 
+    // 解析锁定范围
     let scope = "exclusive"; // 默认为exclusive
     const scopeElement = findElementByLocalName(lockinfo, "lockscope");
     if (scopeElement) {
@@ -112,7 +114,7 @@ export function parseLockXML(xmlBody) {
     };
   } catch (error) {
     console.error("LOCK XML解析错误:", error);
-    throw new Error(`XML解析失败: ${error.message}`);
+    throw new ValidationError("无效的LOCK请求格式");
   }
 }
 
@@ -193,19 +195,20 @@ export function buildLockResponseXML(path, lockInfo) {
 
 /**
  * 构建lockdiscovery属性XML（用于PROPFIND）
+ * 注意：只返回内容，不包含外层<D:lockdiscovery>标签，因为会被PROPFIND自动包装
  * @param {Object} lockInfo - 锁定信息
- * @returns {string} lockdiscovery XML
+ * @returns {string} lockdiscovery内容XML
  */
 export function buildLockDiscoveryXML(lockInfo) {
   if (!lockInfo) {
-    return "<D:lockdiscovery/>";
+    return ""; // 返回空内容，外层会生成<D:lockdiscovery/>
   }
 
   const token = escapeXmlChars(lockInfo.token);
   const owner = escapeXmlChars(lockInfo.owner);
   const timeout = `Second-${lockInfo.timeoutSeconds}`;
 
-  return `<D:lockdiscovery>
+  return `
   <D:activelock>
     <D:locktype><D:${lockInfo.type}/></D:locktype>
     <D:lockscope><D:${lockInfo.scope}/></D:lockscope>
@@ -216,7 +219,7 @@ export function buildLockDiscoveryXML(lockInfo) {
       <D:href>${token}</D:href>
     </D:locktoken>
   </D:activelock>
-</D:lockdiscovery>`;
+`;
 }
 
 /**
@@ -338,7 +341,7 @@ export function parseIfHeaderRFC4918(ifHeader) {
     return { conditions };
   } catch (error) {
     console.error("If头解析错误:", error);
-    return { conditions: [] };
+    throw new ValidationError("If 头解析失败");
   }
 }
 

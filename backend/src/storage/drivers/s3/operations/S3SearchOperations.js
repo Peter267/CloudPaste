@@ -1,14 +1,14 @@
 /**
  * S3搜索操作模块
  * 负责S3存储的搜索相关操作
- * 从searchService.js迁移而来，符合存储驱动架构
  */
 
-import { HTTPException } from "hono/http-exception";
 import { ApiStatus } from "../../../../constants/index.js";
-import { listS3Directory } from "../../../../utils/s3Utils.js";
+import { ValidationError } from "../../../../http/errors.js";
+import { listS3Directory } from "../utils/s3Utils.js";
 import { normalizeS3SubPath } from "../utils/S3PathUtils.js";
 import { getEffectiveMimeType } from "../../../../utils/fileUtils.js";
+import { GetFileType, getFileTypeName } from "../../../../utils/fileTypeDetector.js";
 import { handleFsError } from "../../../fs/utils/ErrorHandler.js";
 import { updateMountLastUsed } from "../../../fs/utils/MountResolver.js";
 
@@ -41,11 +41,11 @@ export class S3SearchOperations {
         const { mount, searchPath, maxResults = 1000, db } = options;
 
         if (!mount) {
-          throw new HTTPException(ApiStatus.BAD_REQUEST, { message: "挂载点信息不能为空" });
+          throw new ValidationError("挂载点信息不能为空");
         }
 
-        // 更新挂载点最后使用时间
-        if (db && mount.id) {
+        // 更新挂载点最后使用时间（仅在有挂载点上下文时）
+        if (db && mount && mount.id) {
           await updateMountLastUsed(db, mount.id);
         }
 
@@ -58,7 +58,7 @@ export class S3SearchOperations {
 
           if (normalizedSearchPath.startsWith(mountPath)) {
             const subPath = normalizedSearchPath.substring(mountPath.length) || "/";
-            searchPrefix = normalizeS3SubPath(subPath, this.config, true);
+            searchPrefix = normalizeS3SubPath(subPath, true);
           }
         }
 
@@ -70,7 +70,7 @@ export class S3SearchOperations {
         }
 
         // 递归搜索S3对象
-        const results = await this.recursiveS3Search(query, fullPrefix, mount, undefined, maxResults);
+        const results = await this.recursiveS3Search(query, fullPrefix, mount, undefined, maxResults, db);
 
         return results;
       },
@@ -86,9 +86,10 @@ export class S3SearchOperations {
    * @param {Object} mount - 挂载点对象
    * @param {string} continuationToken - 分页令牌
    * @param {number} maxResults - 最大结果数量
+   * @param {D1Database} db - 数据库实例
    * @returns {Promise<Array>} 搜索结果数组
    */
-  async recursiveS3Search(query, prefix, mount, continuationToken = undefined, maxResults = 1000) {
+  async recursiveS3Search(query, prefix, mount, continuationToken = undefined, maxResults = 1000, db = null) {
     const results = [];
 
     try {
@@ -105,7 +106,7 @@ export class S3SearchOperations {
           // 检查文件名是否匹配搜索查询
           if (this.matchesSearchQuery(item.Key, query)) {
             // 构建结果对象
-            const result = this.buildSearchResult(item, mount, prefix);
+            const result = await this.buildSearchResult(item, mount, prefix, db);
             results.push(result);
           }
         }
@@ -114,7 +115,7 @@ export class S3SearchOperations {
       // 如果有更多结果且未达到最大数量限制，继续递归搜索
       if (listResponse.IsTruncated && listResponse.NextContinuationToken && results.length < maxResults) {
         const remainingResults = maxResults - results.length;
-        const moreResults = await this.recursiveS3Search(query, prefix, mount, listResponse.NextContinuationToken, remainingResults);
+        const moreResults = await this.recursiveS3Search(query, prefix, mount, listResponse.NextContinuationToken, remainingResults, db);
         results.push(...moreResults);
       }
 
@@ -145,9 +146,10 @@ export class S3SearchOperations {
    * @param {Object} item - S3对象
    * @param {Object} mount - 挂载点对象
    * @param {string} prefix - 搜索前缀
-   * @returns {Object} 搜索结果对象
+   * @param {D1Database} db - 数据库实例
+   * @returns {Promise<Object>} 搜索结果对象
    */
-  buildSearchResult(item, mount, prefix) {
+  async buildSearchResult(item, mount, prefix, db) {
     const fileName = item.Key.split("/").pop() || "";
 
     // 计算相对于S3根前缀的路径
@@ -165,13 +167,19 @@ export class S3SearchOperations {
     const mountPath = mount.mount_path.replace(/\/+$/, "") || "/";
     const fullPath = mountPath + (relativePath || "/" + fileName);
 
+    // 获取文件类型信息
+    const fileType = await GetFileType(fileName, db);
+    const fileTypeName = await getFileTypeName(fileName, db);
+
     return {
       name: fileName,
       path: fullPath.replace(/\/+/g, "/"), // 规范化路径
       size: item.Size,
       modified: item.LastModified,
       isDirectory: false,
-      contentType: getEffectiveMimeType(null, fileName),
+      mimetype: getEffectiveMimeType(null, fileName),
+      type: fileType,
+      typeName: fileTypeName,
       mount_id: mount.id,
       mount_name: mount.name,
       storage_type: mount.storage_type,
@@ -179,28 +187,4 @@ export class S3SearchOperations {
     };
   }
 
-  /**
-   * 排序搜索结果
-   * @param {Array} results - 搜索结果数组
-   * @param {string} query - 搜索查询
-   * @returns {Array} 排序后的结果数组
-   */
-  static sortSearchResults(results, query) {
-    return results.sort((a, b) => {
-      // 优先级1: 文件名完全匹配
-      const aExactMatch = a.name.toLowerCase() === query.toLowerCase();
-      const bExactMatch = b.name.toLowerCase() === query.toLowerCase();
-      if (aExactMatch && !bExactMatch) return -1;
-      if (!aExactMatch && bExactMatch) return 1;
-
-      // 优先级2: 文件名开头匹配
-      const aStartsMatch = a.name.toLowerCase().startsWith(query.toLowerCase());
-      const bStartsMatch = b.name.toLowerCase().startsWith(query.toLowerCase());
-      if (aStartsMatch && !bStartsMatch) return -1;
-      if (!aStartsMatch && bStartsMatch) return 1;
-
-      // 优先级3: 修改时间（最新的在前）
-      return new Date(b.modified) - new Date(a.modified);
-    });
-  }
 }

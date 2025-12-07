@@ -1,8 +1,10 @@
 /**
  * 基础Repository类
  * 提供通用的数据访问方法，所有具体Repository继承此类
- * 职责：纯粹的数据访问，不包含业务逻辑
+ * 纯粹的数据访问，不包含业务逻辑
  */
+
+import { ValidationError } from "../http/errors.js";
 
 export class BaseRepository {
   /**
@@ -96,7 +98,7 @@ export class BaseRepository {
     const values = Object.values(data);
     
     if (fields.length === 0) {
-      throw new Error('创建记录时数据不能为空');
+      throw new ValidationError('创建记录时数据不能为空');
     }
     
     const fieldsClause = fields.join(', ');
@@ -120,7 +122,7 @@ export class BaseRepository {
     const values = Object.values(data);
     
     if (fields.length === 0) {
-      throw new Error('更新记录时数据不能为空');
+      throw new ValidationError('更新记录时数据不能为空');
     }
     
     const setClause = fields.map(field => `${field} = ?`).join(', ');
@@ -155,7 +157,7 @@ export class BaseRepository {
     const values = Object.values(conditions);
     
     if (fields.length === 0) {
-      throw new Error('删除记录时条件不能为空');
+      throw new ValidationError('删除记录时条件不能为空');
     }
     
     const whereClause = fields.map(field => `${field} = ?`).join(' AND ');
